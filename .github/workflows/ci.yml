@@ -29,10 +29,15 @@ jobs:
 
       - name: Run ERT Tests
         uses: tychoish/elisp-ci@main
+        with:
+          dependencies: "magit"
+          test-files: "test/*-test.el"
 
       - name: Measure Code Coverage
         uses: tychoish/elisp-ci/coverage@main
         with:
+          dependencies: "magit"
+          test-files: "test/*-test.el"
           report-format: "lcov"
           output-file: "coverage/lcov.info"
 
