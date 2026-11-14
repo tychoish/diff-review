@@ -19,13 +19,12 @@
   "FORM's value, printed and read back, from an Emacs with this load path
 and nothing loaded: with this package's autoloads, when FORM is not about
 `diff-review' alone."
-  ;; A folder: `loaddefs-generate' writes nothing into an empty file.
-  (let* ((dir (make-temp-file "diff-review-loaddefs" t))
-         (loaddefs (expand-file-name "loaddefs.el" dir)))
+  (let* ((pkg-dir (file-name-directory (locate-library "diff-review-magit")))
+         (loaddefs (make-temp-file (expand-file-name "loaddefs-" pkg-dir) nil ".el")))
+    (delete-file loaddefs)
     (unwind-protect
         (let ((inhibit-message t))
-          (loaddefs-generate (file-name-directory (locate-library "diff-review-magit"))
-                             loaddefs)
+          (loaddefs-generate pkg-dir loaddefs)
           (car (read-from-string
                 (with-output-to-string
                   (with-current-buffer standard-output
@@ -34,7 +33,8 @@ and nothing loaded: with this package's autoloads, when FORM is not about
                                   "--eval" (format "(setq load-path '%S)" load-path)
                                   "--eval" (format "(load %S nil t)" loaddefs)
                                   "--eval" (format "(prin1 %S)" form)))))))
-      (delete-directory dir t))))
+      (when (file-exists-p loaddefs)
+        (delete-file loaddefs)))))
 
 (ert-deftest diff-review-magit-test-core-loads-no-magit ()
   "With magit on the load path, requiring diff-review loads none of it."
