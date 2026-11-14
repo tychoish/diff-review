@@ -149,6 +149,10 @@ Without the tint they keep the fringe bar, which a terminal has not."
 Without the tint they keep the fringe bar, which a terminal has not."
   :type 'boolean)
 
+(defcustom diff-review-word-diff t
+  "Whether to highlight word-level differences within modified lines."
+  :type 'boolean)
+
 (defcustom diff-review-fringe 'left
   "The fringe the hunk bars are drawn in, or nil for no bars."
   :type '(choice (const left) (const right) (const :tag "No bars" nil)))
@@ -167,6 +171,12 @@ Without a background of its own, the background of `diff-added' is used.")
 (defface diff-review-removed '((t :extend t))
   "Face for removed lines, shown inline, over the syntax faces.
 Without a background of its own, the background of `diff-removed' is used.")
+(defface diff-review-refine-added '((t :inherit diff-refine-added))
+  "Face for added words or characters within added lines.
+Without a background of its own, `diff-refine-added''s is used.")
+(defface diff-review-refine-removed '((t :inherit diff-refine-removed))
+  "Face for removed words or characters within removed lines.
+Without a background of its own, `diff-refine-removed''s is used.")
 (defface diff-review-title '((t :inherit bold :height 1.2))
   "Face for the overview's title, the head and the base.")
 (defface diff-review-file-added '((t :inherit (bold success)))
@@ -213,6 +223,7 @@ Without a background of its own, it takes `diff-review-comment's.")
 (defvar-local diff-review--sidebar-enabled nil "Whether this review shows its sidebar.")
 (defvar-local diff-review--sidebar-width nil "The width of this review's sidebar, in columns.")
 (defvar-local diff-review--inline-removed nil "Whether this review shows removed lines inline.")
+(defvar-local diff-review--word-diff t "Whether this review highlights word-level diffs.")
 (defvar-local diff-review--threads-open nil "Whether this review draws every thread open.")
 
 ;; In a file buffer or the sidebar.
@@ -1132,7 +1143,8 @@ and \\[diff-review-toggle-sidebar] shows or hides the sidebar.
   (setq-local revert-buffer-function #'diff-review--revert)
   (setq diff-review--sidebar-enabled diff-review-sidebar
         diff-review--sidebar-width diff-review-sidebar-width
-        diff-review--inline-removed diff-review-inline-removed)
+        diff-review--inline-removed diff-review-inline-removed
+        diff-review--word-diff diff-review-word-diff)
   (add-hook 'write-contents-functions #'diff-review--write nil t)
   (add-hook 'kill-buffer-hook #'diff-review--close nil t)
   ;; Local: a commit on the branch is noticed when the overview is shown or selected.
@@ -1646,13 +1658,15 @@ Returns its buffer.  The review buffer must be current."
 (when (fboundp 'define-fringe-bitmap)   ; absent from a build without a window system
   (define-fringe-bitmap 'diff-review-bar [224] nil nil '(center repeated)))
 
-(defun diff-review--tint (face source)
-  "FACE as an overlay face, with SOURCE's background when FACE sets none."
+(defun diff-review--tint (face source &optional extend)
+  "FACE as an overlay face, with SOURCE's background when FACE sets none.
+EXTEND non-nil sets :extend t on the borrowed background."
   (let ((own (face-attribute face :background nil t))
         (borrowed (face-attribute source :background nil t)))
     (if (or (stringp own) (not (stringp borrowed)))
         face
-      (list face `(:background ,borrowed :extend t)))))
+      (list face (if extend `(:background ,borrowed :extend t)
+                   `(:background ,borrowed))))))
 
 (defun diff-review--fringe-mark (face)
   "A string that draws a bar in `diff-review-fringe' on its line, in FACE.
@@ -1688,6 +1702,89 @@ One mode start for all of them: starting a mode is the slow part."
           (split-string (buffer-string) "\n")))
     (error (mapcar #'copy-sequence lines))))
 
+(defun diff-review--tokenize (string)
+  "Tokenize STRING into a list of (TOKEN START END)."
+  (let (tokens
+        (pos 0))
+    (while (string-match "\\([[:alnum:]_]+\\|[ \t]+\\|\n\\|.\\)" string pos)
+      (push (list (match-string 1 string) (match-beginning 1) (match-end 1)) tokens)
+      (setq pos (match-end 1)))
+    (nreverse tokens)))
+
+(defun diff-review--merge-ranges (ranges)
+  "Merge adjacent or overlapping (START END) RANGES."
+  (let (merged)
+    (dolist (r ranges)
+      (let ((start (car r))
+            (end (cadr r)))
+        (if (and merged (= (nth 1 (car merged)) start))
+            (setf (nth 1 (car merged)) end)
+          (push (list start end) merged))))
+    (nreverse merged)))
+
+(defun diff-review--refine-strings (s1 s2)
+  "Compute word-level differences between S1 and S2.
+Returns a plist (:removed RANGES :added RANGES) or nil if inputs are
+too large or share no non-whitespace tokens."
+  (let* ((tokens1 (diff-review--tokenize s1))
+         (tokens2 (diff-review--tokenize s2))
+         (n1 (length tokens1))
+         (n2 (length tokens2)))
+    ;; Safety threshold: don't compute LCS on massive inputs (> 250,000 cells)
+    (when (and (> n1 0) (> n2 0) (<= (* n1 n2) 250000))
+      (let* ((v1 (vconcat tokens1))
+             (v2 (vconcat tokens2))
+             (dp (make-vector (* (1+ n1) (1+ n2)) 0)))
+        (cl-labels ((idx (i j) (+ (* i (1+ n2)) j)))
+          (dotimes (i n1)
+            (dotimes (j n2)
+              (if (equal (car (aref v1 i)) (car (aref v2 j)))
+                  (aset dp (idx (1+ i) (1+ j)) (1+ (aref dp (idx i j))))
+                (aset dp (idx (1+ i) (1+ j))
+                      (max (aref dp (idx i (1+ j)))
+                           (aref dp (idx (1+ i) j)))))))
+          (let ((i n1) (j n2)
+                (matched1 (make-vector n1 nil))
+                (matched2 (make-vector n2 nil))
+                (has-meaningful-common nil))
+            (while (and (> i 0) (> j 0))
+              (if (equal (car (aref v1 (1- i))) (car (aref v2 (1- j))))
+                  (progn
+                    (aset matched1 (1- i) t)
+                    (aset matched2 (1- j) t)
+                    (unless (string-match-p "\\`[ \t\n]+\\'" (car (aref v1 (1- i))))
+                      (setq has-meaningful-common t))
+                    (cl-decf i)
+                    (cl-decf j))
+                (if (>= (aref dp (idx (1- i) j)) (aref dp (idx i (1- j))))
+                    (cl-decf i)
+                  (cl-decf j))))
+            (when has-meaningful-common
+              (let (diffs1 diffs2)
+                (dotimes (k n1)
+                  (unless (aref matched1 k)
+                    (push (list (nth 1 (aref v1 k)) (nth 2 (aref v1 k))) diffs1)))
+                (dotimes (k n2)
+                  (unless (aref matched2 k)
+                    (push (list (nth 1 (aref v2 k)) (nth 2 (aref v2 k))) diffs2)))
+                (list :removed (diff-review--merge-ranges (nreverse diffs1))
+                      :added (diff-review--merge-ranges (nreverse diffs2)))))))))))
+
+(defun diff-review--apply-refine-to-strings (lines ranges face)
+  "Apply FACE to character RANGES across concatenated LINES."
+  (let ((line-start 0))
+    (dolist (line lines)
+      (let ((line-end (+ line-start (length line))))
+        (dolist (range ranges)
+          (let ((r-start (car range))
+                (r-end (cadr range)))
+            (when (and (< r-start line-end) (> r-end line-start))
+              (let ((local-start (max 0 (- r-start line-start)))
+                    (local-end (min (length line) (- r-end line-start))))
+                (when (< local-start local-end)
+                  (add-face-text-property local-start local-end face nil line))))))
+        (setq line-start (1+ line-end))))))
+
 (defun diff-review--removed-string (lines tint)
   "The inline rendering of removed LINES, fontified already: fringe-marked.
 TINT, a face or nil, goes over the syntax faces."
@@ -1701,9 +1798,12 @@ TINT, a face or nil, goes over the syntax faces."
   "Add the inline removed lines, the added tint, the fringe bars and the folds."
   (diff-review--undecorate)
   (let* ((inline (diff-review--in-review diff-review--inline-removed))
-         (added (and diff-review-tint-added (diff-review--tint 'diff-review-added 'diff-added)))
+         (word-diff (diff-review--in-review diff-review--word-diff))
+         (added (and diff-review-tint-added (diff-review--tint 'diff-review-added 'diff-added t)))
          (removed (and diff-review-tint-removed
-                       (diff-review--tint 'diff-review-removed 'diff-removed)))
+                       (diff-review--tint 'diff-review-removed 'diff-removed t)))
+         (refine-added (and word-diff (diff-review--tint 'diff-review-refine-added 'diff-refine-added nil)))
+         (refine-removed (and word-diff (diff-review--tint 'diff-review-refine-removed 'diff-refine-removed nil)))
          (texts (and inline      ; the file's removed lines, fontified together, once
                      (mapcar #'copy-sequence
                              (or diff-review--texts
@@ -1730,8 +1830,34 @@ TINT, a face or nil, goes over the syntax faces."
                above)
           (overlay-put overlay 'face (and (> count 0) added))
           (when (and inline (plist-get hunk :removed))
-            (let ((n (length (plist-get hunk :removed))))
-              (setq above (diff-review--removed-string (seq-take texts n) removed))
+            (let* ((n (length (plist-get hunk :removed)))
+                   (hunk-texts (seq-take texts n)))
+              (when (and word-diff (> count 0))
+                (let* ((rem-str (concat (string-join (plist-get hunk :removed) "\n") "\n"))
+                       (add-str (save-restriction
+                                  (widen)
+                                  (buffer-substring-no-properties start end)))
+                       (refine (diff-review--refine-strings rem-str add-str)))
+                  (when refine
+                    (when refine-removed
+                      (diff-review--apply-refine-to-strings hunk-texts
+                                                            (plist-get refine :removed)
+                                                            refine-removed))
+                    (when refine-added
+                      (dolist (range (plist-get refine :added))
+                        (let ((a-start (car range))
+                              (a-end (cadr range)))
+                          (when (and (> a-end a-start)
+                                     (eq (save-restriction (widen) (char-after (+ start a-end -1))) ?\n))
+                            (setq a-end (1- a-end)))
+                          (when (> a-end a-start)
+                            (let ((ol (make-overlay (+ start a-start)
+                                                    (+ start a-end)
+                                                    nil t nil)))
+                              (overlay-put ol 'face refine-added)
+                              (overlay-put ol 'priority 1)
+                              (push ol diff-review--overlays)))))))))
+              (setq above (diff-review--removed-string hunk-texts removed))
               (setq texts (nthcdr n texts))))
           ;; The first added line's bar goes after the removed lines, in one
           ;; string: two before-strings at one place have no reliable order.
@@ -2225,6 +2351,13 @@ shares is shown once, in front."
     (setq diff-review--inline-removed (not diff-review--inline-removed)))
   (diff-review--decorate))
 
+(defun diff-review-toggle-word-diff ()
+  "Show or hide word-level diffs, in this and later files of the review."
+  (interactive)
+  (diff-review--in-review
+    (setq diff-review--word-diff (not diff-review--word-diff)))
+  (diff-review--decorate))
+
 (defun diff-review--next-error (n &optional reset)
   "Walk N hunks for `next-error', back when N is negative.
 RESET starts from the first hunk of the file."
@@ -2257,6 +2390,7 @@ RESET starts from the first hunk of the file."
   "p" #'diff-review-previous-hunk
   "v" #'diff-review-viewed-and-next
   "d" #'diff-review-toggle-inline-removed
+  "w" #'diff-review-toggle-word-diff
   "z" #'diff-review-toggle-focus
   "c" #'diff-review-comment
   "r" #'diff-review-reply
@@ -2298,6 +2432,7 @@ A revert does that: nothing of the review stays behind in the buffer."
 hunks, across files.  \\[diff-review-viewed-and-next] marks the file viewed and
 moves on, \\[diff-review-toggle-focus] folds the unchanged lines,
 \\[diff-review-toggle-inline-removed] hides the removed lines,
+\\[diff-review-toggle-word-diff] toggles word-level diffs,
 \\[diff-review-toggle-sidebar] shows or hides the sidebar,
 \\[diff-review-overview] goes back to the overview and
 \\[diff-review-quit] ends the review.

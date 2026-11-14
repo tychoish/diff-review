@@ -1627,5 +1627,55 @@ file, the overview, the sidebar's and the file's headers."
     (should-error (diff-review-approve) :type 'user-error)
     (should-not (diff-review-test--verdict (current-buffer)))))
 
+(ert-deftest diff-review-test-word-diff-tokenize ()
+  "Tokenizing splits into words, whitespace and symbols with accurate ranges."
+  (let ((tokens (diff-review--tokenize "foo(bar + 1);\n")))
+    (should (equal (mapcar #'car tokens) '("foo" "(" "bar" " " "+" " " "1" ")" ";" "\n")))
+    (should (equal (car tokens) '("foo" 0 3)))
+    (should (equal (nth 2 tokens) '("bar" 4 7)))))
+
+(ert-deftest diff-review-test-word-diff-refine-strings ()
+  "Word diff identifies fine changes between two strings sharing words."
+  (let ((refine (diff-review--refine-strings "count = old_count + 1;\n"
+                                             "count = new_count + 1;\n")))
+    (should (equal (plist-get refine :removed) '((8 17))))
+    (should (equal (plist-get refine :added) '((8 17))))))
+
+(ert-deftest diff-review-test-word-diff-refine-disjoint ()
+  "Word diff returns nil when lines have no meaningful shared tokens."
+  (should-not (diff-review--refine-strings "aaa bbb ccc\n" "xxx yyy zzz\n")))
+
+(ert-deftest diff-review-test-word-diff-decoration ()
+  "Modified lines receive word-level refine overlays and can be toggled."
+  (diff-review-test--with-repo
+    (diff-review-test--write "a.txt" "a\nprefix old_token suffix\nc\nd\ne\n")
+    (diff-review-test--git "commit" "-q" "-am" "base-for-word-diff")
+    (diff-review-test--write "a.txt" "a\nprefix new_token suffix\nc\nd\ne\n")
+    (delete-other-windows)
+    (diff-review-test--open repo)
+    (let ((main (selected-window)))
+      (diff-review-next-file)
+      (diff-review-next-file)
+      (diff-review--follow)
+      (should (equal (buffer-name (window-buffer main)) "a.txt"))
+      (with-current-buffer (window-buffer main)
+        (should diff-review-file-mode)
+        (let ((refine-ols (seq-filter (lambda (ol)
+                                        (let ((f (overlay-get ol 'face)))
+                                          (or (eq f 'diff-review-refine-added)
+                                              (and (listp f)
+                                                   (eq (car f) 'diff-review-refine-added)))))
+                                      (overlays-in (point-min) (point-max)))))
+          (should refine-ols))
+        ;; Toggle word diff off
+        (diff-review-toggle-word-diff)
+        (let ((refine-ols (seq-filter (lambda (ol)
+                                        (let ((f (overlay-get ol 'face)))
+                                          (or (eq f 'diff-review-refine-added)
+                                              (and (listp f)
+                                                   (eq (car f) 'diff-review-refine-added)))))
+                                      (overlays-in (point-min) (point-max)))))
+          (should-not refine-ols))))))
+
 (provide 'diff-review-test)
 ;;; diff-review-test.el ends here
