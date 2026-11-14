@@ -816,7 +816,7 @@ the hunks keep their overlays, removed lines and moves."
 
 (ert-deftest diff-review-test-evil-keys ()
   "With Evil, the lists start in normal state with TAB folding; a file gets no keys."
-  (skip-unless (and (locate-library "evil") (require 'evil nil t)))
+  (when (and (locate-library "evil") (require 'evil nil t))
   (should (equal (diff-review-test--evil
                   '(progn (require 'evil)
                           (require 'diff-review)
@@ -826,11 +826,11 @@ the hunks keep their overlays, removed lines and moves."
                                             (kbd "TAB"))
                                 (assq 'diff-review-file-mode
                                       (cdr (assq 'normal evil-minor-mode-keymaps-alist))))))
-                 '(normal magit-section-toggle nil))))
+                 '(normal magit-section-toggle nil)))))
 
 (ert-deftest diff-review-test-evil-keys-off ()
   "`diff-review-evil-keys' nil leaves Evil untouched."
-  (skip-unless (and (locate-library "evil") (require 'evil nil t)))
+  (when (and (locate-library "evil") (require 'evil nil t))
   (should (equal (diff-review-test--evil
                   '(progn (setq diff-review-evil-keys nil)
                           (require 'diff-review)
@@ -838,7 +838,7 @@ the hunks keep their overlays, removed lines and moves."
                           (list (evil-initial-state 'diff-review-mode)
                                 (evil-get-auxiliary-keymap
                                  diff-review-mode-map 'normal nil t))))
-                 '(nil nil))))
+                 '(nil nil)))))
 
 ;;;; Comments
 
