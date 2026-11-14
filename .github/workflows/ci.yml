@@ -31,13 +31,13 @@ jobs:
         uses: tychoish/elisp-ci@main
         with:
           dependencies: "magit"
-          test-files: "test/*-test.el"
+          test-files: "test/diff-review-magit-test.el"
 
       - name: Measure Code Coverage
         uses: tychoish/elisp-ci/coverage@main
         with:
           dependencies: "magit"
-          test-files: "test/*-test.el"
+          test-files: "test/diff-review-magit-test.el"
           report-format: "lcov"
           output-file: "coverage/lcov.info"
 

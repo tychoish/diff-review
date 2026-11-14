@@ -9,9 +9,8 @@
 ;;; Code:
 
 (require 'ert)
-(load (expand-file-name "diff-review-test.el"
-                        (file-name-directory (or load-file-name buffer-file-name)))
-      nil t)
+(require 'diff-review-test (expand-file-name "diff-review-test.el"
+                                             (file-name-directory (or load-file-name buffer-file-name))))
 (require 'magit)
 (require 'diff-review-magit)
 
